@@ -84,7 +84,7 @@ async def connect_to_peer(peer_ip, peer_port, info_hash, peer_id):
 
         # Отправка сообщения рукопожатия
         handshake_msg = handshake(info_hash, peer_id)
-        print(f"Отправка рукопожатия: {handshake_msg.hex()}")
+        print(f"Отправка рукопожатия: {handshake_msg}")
         writer.write(handshake_msg)
         await writer.drain()
 
@@ -103,20 +103,18 @@ async def connect_to_peer(peer_ip, peer_port, info_hash, peer_id):
         print("Рукопожатие успешно!")
 
         # Возвращаем соединение
-        return reader, writer
+        return response
 
     except Exception as e:
         print(f"Ошибка при подключении к пиру {peer_ip}:{peer_port}: {e}")
         raise
 
 
-
 def assemble_file(total_pieces, piece_size, file_path, downloaded_pieces):
     try:
         # Убедитесь, что скачанных частей достаточно
         if len(downloaded_pieces) < total_pieces:
-            raise ValueError(
-                f"Недостаточно скачанных частей: ожидается {total_pieces}, получено {len(downloaded_pieces)}.")
+            raise ValueError(f"Недостаточно скачанных частей: ожидается {total_pieces}, получено {len(downloaded_pieces)}.")
 
         # Пример сборки файла
         with open(file_path, 'wb') as file:
@@ -192,53 +190,6 @@ def choose_random_peer(peers):
     return random.choice(peers)  # Выбираем случайного пира из списка
 
 
-def create_piece_request(piece_index, piece_size, block_offset=0):
-    """
-    Создает запрос на скачивание фрагмента (piece request) для протокола BitTorrent.
-
-    :param piece_index: Индекс фрагмента, который нужно скачать (целое число).
-    :param piece_size: Размер фрагмента в байтах (целое число).
-    :param block_offset: Смещение внутри фрагмента (обычно 0 для первого блока).
-    :return: Запрос на скачивание фрагмента в виде байтовой строки.
-    """
-    # Тип сообщения (6 - запрос фрагмента)
-    message_type = b'\x06'
-
-    # Индекс фрагмента (4 байта)
-    index = piece_index.to_bytes(4, byteorder='big')
-
-    # Смещение в фрагменте (4 байта)
-    offset = block_offset.to_bytes(4, byteorder='big')
-
-    # Размер фрагмента (4 байта)
-    length = piece_size.to_bytes(4, byteorder='big')
-
-    # Формируем полный запрос
-    request = message_type + index + offset + length
-
-    return request
-
-
-async def download_piece(reader, writer, piece_index, piece_size):
-    try:
-        # Например, отправляем запрос на скачивание части
-        request = create_piece_request(piece_index, piece_size)  # Ваш код для создания запроса
-        writer.write(request)
-        await writer.drain()
-
-        # Получение данных
-        data = await reader.read(piece_size)
-        if not data:
-            raise Exception(f"Не удалось получить часть {piece_index}")
-
-        print(f"Часть {piece_index} скачана, размер: {len(data)} байт")
-        return data
-
-    except Exception as e:
-        print(f"Ошибка при скачивании части {piece_index}: {e}")
-        return None
-
-
 # Пример асинхронного запроса пиров
 async def main():
     torrent_file_path = 'summer-dance-hits-2024.torrent'
@@ -252,28 +203,23 @@ async def main():
     # Получаем пиров
     peers = await get_peers_async(tracker_url, info_hash, peer_id)
 
-    reader = 0
-    writer = 0
-
     downloaded_pieces = []
     prs = parse_peers(peers)
     for peer_ip, peer_port in prs:
         print(f"Peer IP: {peer_ip}, Peer Port: {peer_port}")
-        reader, writer = await connect_to_peer(peer_ip, peer_port, info_hash, peer_id)
-        break
+        piece_part = await connect_to_peer(peer_ip, peer_port, info_hash, peer_id)
+        downloaded_pieces.append(piece_part)
 
-    total_pieces = 10
+    total_pieces = len(downloaded_pieces)
+
     piece_size = 1024 * 256  # Размер фрагмента (256 KB)
-    downloaded_pieces = []
 
-    for i in range(total_pieces):
-        print(f"Скачиваем часть {i}")
-        piece_data = await download_piece(reader, writer, i, piece_size)
-        if piece_data:
-            downloaded_pieces.append(piece_data)
+    # Сборка файла
+    file_path = 'downloaded_files/assembled_file.mp3'
+    assemble_file(total_pieces, piece_size, file_path, downloaded_pieces)
 
     # Проверка целостности файла
-    # check_file_integrity(file_path, torrent_data)
+    check_file_integrity(file_path, torrent_data)
 
 
 # Запуск асинхронной программы
