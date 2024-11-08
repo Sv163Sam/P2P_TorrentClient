@@ -69,11 +69,21 @@ def handshake(info_hash, peer_id):
     # Преобразуем в байты, если это не байтовая строка
     if isinstance(info_hash, str):
         info_hash = bytes.fromhex(info_hash)  # если info_hash представлен в hex-строке
-    if isinstance(peer_id, str):
-        peer_id = peer_id.encode('utf-8')  # Преобразуем строку peer_id в байты
 
-    handshake_message = b'\x13BitTorrent protocol' + b'\x00' * 8 + info_hash + peer_id
-    return handshake_message
+    pstrlen = 19
+    pstr = b'BitTorrent protocol'
+    reserved = b'\x00\x00\x00\x00\x00\x00\x00\x00'  # 8 байт зарезервированного пространства
+
+    print(len(peer_id))
+    handshake1 = struct.pack(
+        '>B19s8s20s16s',  # Формат упаковки: байт, 19 байт, 8 байт, 20 байт, 20 байт
+        pstrlen,
+        pstr,
+        reserved,
+        info_hash,
+        peer_id.encode('utf-8')
+    )
+    return handshake1
 
 
 async def connect_to_peer(peer_ip, peer_port, info_hash, peer_id):
@@ -81,10 +91,9 @@ async def connect_to_peer(peer_ip, peer_port, info_hash, peer_id):
         # Подключение к пиру
         reader, writer = await asyncio.open_connection(peer_ip, peer_port)
         print(f"Подключаемся к пиру {peer_ip}:{peer_port}")
-
         # Отправка сообщения рукопожатия
         handshake_msg = handshake(info_hash, peer_id)
-        print(f"Отправка рукопожатия: {handshake_msg.hex()}")
+        print(f"Отправка рукопожатия: {handshake_msg}")
         writer.write(handshake_msg)
         await writer.drain()
 
@@ -92,23 +101,23 @@ async def connect_to_peer(peer_ip, peer_port, info_hash, peer_id):
         response = await reader.read(68)  # Ожидаем ответа от пира (обычно 68 байт)
         print(f"Получен ответ: {response.hex()}")
 
-        if len(response) != 68:
-            raise Exception("Ответ от пира имеет неправильную длину")
+        print("Respone:", len(response))
 
         # Проверка правильности рукопожатия
-        if response[0:19] != b'\x13BitTorrent protocol':
-            raise Exception("Ошибка рукопожатия: Неверный заголовок протокола")
+        print("Check handshake: ", response[0:19])
 
         # Вывод информации о соединении
-        print("Рукопожатие успешно!")
+        # print("Рукопожатие успешно!")
+
+        writer.close()
+        await writer.wait_closed()
 
         # Возвращаем соединение
-        return reader, writer
+        return response
 
     except Exception as e:
         print(f"Ошибка при подключении к пиру {peer_ip}:{peer_port}: {e}")
         raise
-
 
 
 def assemble_file(total_pieces, piece_size, file_path, downloaded_pieces):
@@ -192,51 +201,16 @@ def choose_random_peer(peers):
     return random.choice(peers)  # Выбираем случайного пира из списка
 
 
-def create_piece_request(piece_index, piece_size, block_offset=0):
-    """
-    Создает запрос на скачивание фрагмента (piece request) для протокола BitTorrent.
-
-    :param piece_index: Индекс фрагмента, который нужно скачать (целое число).
-    :param piece_size: Размер фрагмента в байтах (целое число).
-    :param block_offset: Смещение внутри фрагмента (обычно 0 для первого блока).
-    :return: Запрос на скачивание фрагмента в виде байтовой строки.
-    """
-    # Тип сообщения (6 - запрос фрагмента)
-    message_type = b'\x06'
-
-    # Индекс фрагмента (4 байта)
-    index = piece_index.to_bytes(4, byteorder='big')
-
-    # Смещение в фрагменте (4 байта)
-    offset = block_offset.to_bytes(4, byteorder='big')
-
-    # Размер фрагмента (4 байта)
-    length = piece_size.to_bytes(4, byteorder='big')
-
-    # Формируем полный запрос
-    request = message_type + index + offset + length
-
-    return request
-
-
-async def download_piece(reader, writer, piece_index, piece_size):
+# Пример асинхронного запроса пиров
+def is_port_open(host, port):
     try:
-        # Например, отправляем запрос на скачивание части
-        request = create_piece_request(piece_index, piece_size)  # Ваш код для создания запроса
-        writer.write(request)
-        await writer.drain()
-
-        # Получение данных
-        data = await reader.read(piece_size)
-        if not data:
-            raise Exception(f"Не удалось получить часть {piece_index}")
-
-        print(f"Часть {piece_index} скачана, размер: {len(data)} байт")
-        return data
-
-    except Exception as e:
-        print(f"Ошибка при скачивании части {piece_index}: {e}")
-        return None
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        sock.connect((host, port))
+        sock.close()
+        return True
+    except socket.error:
+        return False
 
 
 # Пример асинхронного запроса пиров
@@ -249,31 +223,54 @@ async def main():
     peer_id = '-TR1234-abcdefgh'  # Пример peer_id, обычно генерируется
     tracker_url = torrent_data[b'announce'].decode('utf-8')
 
-    # Получаем пиров
-    peers = await get_peers_async(tracker_url, info_hash, peer_id)
-
-    reader = 0
-    writer = 0
-
     downloaded_pieces = []
-    prs = parse_peers(peers)
+    prs = [('69.32.72.84', 19788), ('32.80.85.66', 19529), ('67.32.34.45', 12079), ('87.51.67.47', 12100),
+           ('84.68.32.72', 21581), ('76.32.52.46', 12337), ('32.84.114.97', 28275), ('105.116.105.111', 28257),
+           ('108.47.47.69', 20002), ('32.34.104.116', 29808), ('58.47.47.119', 30583), ('46.119.51.46', 28530),
+           ('103.47.84.82', 12136), ('116.109.108.52', 12140), ('111.111.115.101', 11876), ('116.100.34.62', 2620),
+           ('104.116.109.108', 8304), ('114.101.102.105', 30781), ('34.121.97.58', 8296), ('116.116.112.58', 12079),
+           ('119.101.98.109', 24947), ('116.101.114.46', 31073), ('110.100.101.120', 11890), ('117.47.118.111', 25441),
+           ('98.117.108.97', 29289), ('101.115.47.34', 15932), ('104.101.97.100', 15882), ('60.109.101.116', 24864),
+           ('104.116.116.112', 11621), ('113.117.105.118', 15650), ('67.111.110.116', 25966), ('116.45.84.121', 28773),
+           ('34.32.99.111', 28276), ('101.110.116.61', 8820), ('101.120.116.47', 26740), ('109.108.59.32', 25448),
+           ('97.114.115.101', 29757), ('119.105.110.100', 28535), ('115.45.49.50', 13617), ('34.62.10.60', 28005),
+           ('116.97.32.110', 24941), ('101.61.34.121', 24942), ('100.101.120.45', 30309), ('114.105.102.105', 25441),
+           ('116.105.111.110', 8736), ('99.111.110.116', 25966), ('116.61.34.49', 13158), ('51.52.101.49', 25137),
+           ('98.97.57.51', 14131), ('102.34.32.47', 15882), ('60.109.101.116', 24864), ('104.116.116.112', 11621),
+           ('113.117.105.118', 15650), ('67.111.110.116', 25966), ('116.45.83.116', 31084), ('101.45.84.121', 28773),
+           ('34.32.99.111', 28276), ('101.110.116.61', 8820), ('101.120.116.47', 25459), ('115.34.62.10', 15469),
+           ('101.116.97.32', 26740), ('116.112.45.101', 29045), ('105.118.61.34', 22573), ('85.65.45.67', 28525),
+           ('112.97.116.105', 25196), ('101.34.32.99', 28526), ('116.101.110.116', 15650), ('99.104.114.111', 28005),
+           ('61.49.34.62', 2620), ('109.101.116.97', 8304), ('114.111.112.101', 29300), ('121.61.34.121', 24890),
+           ('105.110.116.101', 29281), ('99.116.105.111', 28194), ('32.99.111.110', 29797), ('110.116.61.34', 22605),
+           ('76.95.70.79', 21069), ('34.32.47.62', 2620), ('109.101.116.97', 8304), ('114.111.112.101', 29300),
+           ('121.61.34.121', 24890), ('105.110.116.101', 29281), ('99.116.105.111', 28218), ('117.114.108.34', 8291),
+           ('111.110.116.101', 28276), ('61.34.104.116', 29808), ('58.47.47.110', 28269), ('45.99.108.117', 25134),
+           ('109.101.47.102', 28530), ('117.109.47.121', 24942), ('100.101.120.46', 30829), ('108.34.32.47', 15882),
+           ('60.108.105.110', 27424), ('114.101.108.61', 8825), ('97.110.100.101', 30765), ('116.97.98.108', 25953),
+           ('117.45.119.105', 25703), ('101.116.34.32', 26738), ('101.102.61.34', 26740), ('116.112.115.58', 12079),
+           ('110.110.109.45', 25452), ('117.98.46.109', 25903), ('116.97.98.108', 25953), ('117.47.116.97', 25196),
+           ('101.97.117.46', 27251), ('111.110.34.32', 12094), ('10.60.109.101', 29793), ('32.110.97.109', 25917),
+           ('34.118.105.101', 30576), ('111.114.116.34', 8291), ('111.110.116.101', 28276), ('61.34.119.105', 25716),
+           ('104.61.100.101', 30313), ('99.101.45.119', 26980), ('116.104.44.32', 26990), ('105.116.105.97', 27693),
+           ('115.99.97.108', 25917), ('49.46.48.34', 8239)]
+    print(prs)
     for peer_ip, peer_port in prs:
         print(f"Peer IP: {peer_ip}, Peer Port: {peer_port}")
-        reader, writer = await connect_to_peer(peer_ip, peer_port, info_hash, peer_id)
-        break
+        if is_port_open(peer_ip, peer_port):
+            piece_part = await connect_to_peer(peer_ip, peer_port, info_hash, peer_id)
+            downloaded_pieces.append(piece_part)
 
-    total_pieces = 10
+    total_pieces = len(downloaded_pieces)
+
     piece_size = 1024 * 256  # Размер фрагмента (256 KB)
-    downloaded_pieces = []
 
-    for i in range(total_pieces):
-        print(f"Скачиваем часть {i}")
-        piece_data = await download_piece(reader, writer, i, piece_size)
-        if piece_data:
-            downloaded_pieces.append(piece_data)
+    # Сборка файла
+    file_path = 'assembled_file.mp3'
+    assemble_file(total_pieces, piece_size, file_path, downloaded_pieces)
 
     # Проверка целостности файла
-    # check_file_integrity(file_path, torrent_data)
+    check_file_integrity(file_path, torrent_data)
 
 
 # Запуск асинхронной программы

@@ -69,11 +69,21 @@ def handshake(info_hash, peer_id):
     # Преобразуем в байты, если это не байтовая строка
     if isinstance(info_hash, str):
         info_hash = bytes.fromhex(info_hash)  # если info_hash представлен в hex-строке
-    if isinstance(peer_id, str):
-        peer_id = peer_id.encode('utf-8')  # Преобразуем строку peer_id в байты
 
-    handshake_message = b'\x13BitTorrent protocol' + b'\x00' * 8 + info_hash + peer_id
-    return handshake_message
+    pstrlen = 19
+    pstr = b'BitTorrent protocol'
+    reserved = b'\x00\x00\x00\x00\x00\x00\x00\x00'  # 8 байт зарезервированного пространства
+
+    print(len(peer_id))
+    handshake1 = struct.pack(
+        '>B19s8s20s16s',  # Формат упаковки: байт, 19 байт, 8 байт, 20 байт, 20 байт
+        pstrlen,
+        pstr,
+        reserved,
+        info_hash,
+        peer_id.encode('utf-8')
+    )
+    return handshake1
 
 
 async def connect_to_peer(peer_ip, peer_port, info_hash, peer_id):
@@ -81,7 +91,6 @@ async def connect_to_peer(peer_ip, peer_port, info_hash, peer_id):
         # Подключение к пиру
         reader, writer = await asyncio.open_connection(peer_ip, peer_port)
         print(f"Подключаемся к пиру {peer_ip}:{peer_port}")
-
         # Отправка сообщения рукопожатия
         handshake_msg = handshake(info_hash, peer_id)
         print(f"Отправка рукопожатия: {handshake_msg}")
@@ -92,15 +101,16 @@ async def connect_to_peer(peer_ip, peer_port, info_hash, peer_id):
         response = await reader.read(68)  # Ожидаем ответа от пира (обычно 68 байт)
         print(f"Получен ответ: {response.hex()}")
 
-        if len(response) != 68:
-            raise Exception("Ответ от пира имеет неправильную длину")
+        print("Respone:", len(response))
 
         # Проверка правильности рукопожатия
-        if response[0:19] != b'\x13BitTorrent protocol':
-            raise Exception("Ошибка рукопожатия: Неверный заголовок протокола")
+        print("Check handshake: ", response[0:19])
 
         # Вывод информации о соединении
-        print("Рукопожатие успешно!")
+        # print("Рукопожатие успешно!")
+
+        writer.close()
+        await writer.wait_closed()
 
         # Возвращаем соединение
         return response
@@ -114,7 +124,8 @@ def assemble_file(total_pieces, piece_size, file_path, downloaded_pieces):
     try:
         # Убедитесь, что скачанных частей достаточно
         if len(downloaded_pieces) < total_pieces:
-            raise ValueError(f"Недостаточно скачанных частей: ожидается {total_pieces}, получено {len(downloaded_pieces)}.")
+            raise ValueError(
+                f"Недостаточно скачанных частей: ожидается {total_pieces}, получено {len(downloaded_pieces)}.")
 
         # Пример сборки файла
         with open(file_path, 'wb') as file:
@@ -191,6 +202,18 @@ def choose_random_peer(peers):
 
 
 # Пример асинхронного запроса пиров
+def is_port_open(host, port):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        sock.connect((host, port))
+        sock.close()
+        return True
+    except socket.error:
+        return False
+
+
+# Пример асинхронного запроса пиров
 async def main():
     torrent_file_path = 'summer-dance-hits-2024.torrent'
     torrent_data = parse_torrent_file(torrent_file_path)
@@ -199,23 +222,25 @@ async def main():
     info_hash = get_info_hash(torrent_data).hex()
     peer_id = '-TR1234-abcdefgh'  # Пример peer_id, обычно генерируется
     tracker_url = torrent_data[b'announce'].decode('utf-8')
+    print(tracker_url)
 
     # Получаем пиров
     peers = await get_peers_async(tracker_url, info_hash, peer_id)
-
     downloaded_pieces = []
     prs = parse_peers(peers)
+
     for peer_ip, peer_port in prs:
         print(f"Peer IP: {peer_ip}, Peer Port: {peer_port}")
-        piece_part = await connect_to_peer(peer_ip, peer_port, info_hash, peer_id)
-        downloaded_pieces.append(piece_part)
+        if is_port_open(peer_ip, peer_port):
+            piece_part = await connect_to_peer(peer_ip, peer_port, info_hash, peer_id)
+            downloaded_pieces.append(piece_part)
 
     total_pieces = len(downloaded_pieces)
 
     piece_size = 1024 * 256  # Размер фрагмента (256 KB)
 
     # Сборка файла
-    file_path = 'downloaded_files/assembled_file.mp3'
+    file_path = 'assembled_file.mp3'
     assemble_file(total_pieces, piece_size, file_path, downloaded_pieces)
 
     # Проверка целостности файла
